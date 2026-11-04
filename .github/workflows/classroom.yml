@@ -15,9 +15,69 @@ jobs:
         with:
           fetch-depth: 0
 
-      # TODO build, test and deploy project
+      # Сборка, тесты и деплой (Render вместо Heroku)
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build ./...
+
+      - name: Unit tests
+        run: go test ./... -v
+
+      - name: Build Docker image
+        run: docker build -t person-service:ci .
+
+      # Деплой и интеграционные тесты — только на push в master
+      - name: Trigger Render deploy
+        if: github.event_name == 'push'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+          response=$(curl -sf -X POST \
+            "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys" \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"clearCache":"do_not_clear"}')
+          deploy_id=$(echo "$response" | jq -r '.id')
+          echo "deploy id: ${deploy_id}"
+          for i in $(seq 1 60); do
+            status=$(curl -sf \
+              "https://api.render.com/v1/services/${RENDER_SERVICE_ID}/deploys/${deploy_id}" \
+              -H "Authorization: Bearer ${RENDER_API_KEY}" | jq -r '.status')
+            echo "deploy status: ${status}"
+            case "${status}" in
+              live) exit 0 ;;
+              build_failed|update_failed|pre_deploy_failed|canceled) exit 1 ;;
+            esac
+            sleep 15
+          done
+          echo "deploy timed out"
+          exit 1
+
+      # Бесплатный инстанс Render засыпает; ждём пробуждения перед интеграционными тестами
+      - name: Warm up service
+        if: github.event_name == 'push'
+        env:
+          SERVICE_URL: ${{ secrets.RENDER_SERVICE_URL }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null "${SERVICE_URL}/api/v1/persons"; then
+              echo "service is up"
+              exit 0
+            fi
+            echo "waiting for service... (${i})"
+            sleep 10
+          done
+          echo "service did not come up"
+          exit 1
 
       - name: Run API Tests
+        if: github.event_name == 'push'
         uses: matt-ball/newman-action@master
         with:
           collection: postman/[inst] Lab1.postman_collection.json
