@@ -8,14 +8,12 @@ on:
       - master
 jobs:
   build:
-    name: Autograding
+    name: Build and Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
-
-      # Сборка, тесты и деплой (Render вместо Heroku)
 
       - uses: actions/setup-go@v5
         with:
@@ -30,9 +28,13 @@ jobs:
       - name: Build Docker image
         run: docker build -t person-service:ci .
 
-      # Деплой и интеграционные тесты — только на push в master
+  deploy:
+    name: Deploy to Render
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
       - name: Trigger Render deploy
-        if: github.event_name == 'push'
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
@@ -61,7 +63,6 @@ jobs:
 
       # Бесплатный инстанс Render засыпает; ждём пробуждения перед интеграционными тестами
       - name: Warm up service
-        if: github.event_name == 'push'
         env:
           SERVICE_URL: ${{ secrets.RENDER_SERVICE_URL }}
         run: |
@@ -76,8 +77,14 @@ jobs:
           echo "service did not come up"
           exit 1
 
+  integration-test:
+    name: Integration Tests
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
       - name: Run API Tests
-        if: github.event_name == 'push'
         uses: matt-ball/newman-action@master
         with:
           collection: postman/[inst] Lab1.postman_collection.json
